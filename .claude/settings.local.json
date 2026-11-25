@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"C:\\\\xampp\\\\mysql\\\\bin\\\\mysql.exe\" -u root hospital_clinic_queue_management -e \"DESCRIBE doctors; DESCRIBE patients; DESCRIBE users;\" 2>&1)",
+      "PowerShell(& \"C:\\\\xampp\\\\mysql\\\\bin\\\\mysql.exe\" -u root hospital_clinic_queue_management -e \"DESCRIBE hospitals; DESCRIBE clinics; DESCRIBE medical_history;\" 2>&1)",
+      "PowerShell(& \"C:\\\\xampp\\\\mysql\\\\bin\\\\mysql.exe\" -u root hospital_clinic_queue_management -e \"DESCRIBE doctor_hospital_assignments; DESCRIBE doctor_clinic_assignments; DESCRIBE specializations; DESCRIBE patient_symptoms;\" 2>&1)",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -Confirm:$false)"
+    ]
+  }
+}

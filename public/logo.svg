@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!-- Blue rounded square background -->
+  <rect width="200" height="200" rx="44" fill="#2346E8"/>
+
+  <!-- Left arm of U -->
+  <rect x="28" y="26" width="42" height="108" rx="21" fill="white"/>
+  <!-- Right arm of U -->
+  <rect x="130" y="26" width="42" height="108" rx="21" fill="white"/>
+
+  <!-- Bottom curve of U (stroke-based arc) -->
+  <path d="M 49 118 Q 49 172 100 172 Q 151 172 151 118"
+        fill="none" stroke="white" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Plus / cross (white, centered between the arms) -->
+  <rect x="83" y="70" width="34" height="14" rx="7" fill="white"/>
+  <rect x="93" y="60" width="14" height="34" rx="7" fill="white"/>
+</svg>

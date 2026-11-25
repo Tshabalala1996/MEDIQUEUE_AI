@@ -1,0 +1,1523 @@
+openapi: 3.1.0
+info:
+  title: Hospital Queue Management System API
+  version: 1.0.0
+  description: |
+    REST API for the South African Hospital and Clinic Queue Management System.
+
+    **Authentication:** Most endpoints require a Bearer token in the `Authorization` header.
+    Obtain a token by calling `POST /api/auth/login`. Tokens expire after 15 minutes;
+    use `POST /api/auth/refresh` (with the `refresh_token` cookie) to get a new one.
+
+    **Roles:** Patient, Doctor, Receptionist, Admin. Role restrictions are noted per endpoint.
+  contact:
+    name: Hospital Queue System
+    email: admin@hospital.co.za
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          description: Response payload (type varies per endpoint)
+        message:
+          type: string
+        error:
+          type: string
+
+    PaginatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            pagination:
+              type: object
+              properties:
+                page: { type: integer }
+                limit: { type: integer }
+                total: { type: integer }
+                totalPages: { type: integer }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        first_name: { type: string }
+        last_name: { type: string }
+        phone_number: { type: string }
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [Patient, Doctor, Receptionist, Admin]
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Doctor:
+      type: object
+      properties:
+        doctor_id: { type: integer }
+        first_name: { type: string }
+        last_name: { type: string }
+        specialization_name: { type: string }
+        hpcsa_number: { type: string, example: MP1234567 }
+        consultation_fee: { type: number, format: decimal }
+        years_of_experience: { type: integer }
+        average_rating: { type: number }
+        bio: { type: string }
+        is_available: { type: boolean }
+
+    Appointment:
+      type: object
+      properties:
+        id: { type: integer }
+        doctor_id: { type: integer }
+        patient_id: { type: integer }
+        facility_type:
+          type: string
+          enum: [Hospital, Clinic]
+        facility_id: { type: integer }
+        appointment_datetime: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [Scheduled, Confirmed, In-Progress, Completed, Cancelled, No-Show]
+        reason_for_visit: { type: string }
+        created_at: { type: string, format: date-time }
+
+    QueueEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        appointment_id: { type: integer }
+        queue_position: { type: integer }
+        patient_name: { type: string }
+        status:
+          type: string
+          enum: [Waiting, In-Progress, Completed, No-Show, Skipped]
+        estimated_wait_minutes: { type: integer, nullable: true }
+        called_at: { type: string, format: date-time, nullable: true }
+
+    Hospital:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        address: { type: string }
+        city: { type: string }
+        province:
+          type: string
+          enum: [Eastern Cape, Free State, Gauteng, KwaZulu-Natal, Limpopo,
+                 Mpumalanga, Northern Cape, North West, Western Cape]
+        postal_code: { type: string }
+        phone_number: { type: string }
+        email: { type: string, format: email }
+        hospital_type:
+          type: string
+          enum: [Public, Private]
+        bed_count: { type: integer }
+
+    Clinic:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        address: { type: string }
+        city: { type: string }
+        province: { type: string }
+        clinic_type:
+          type: string
+          enum: [Public, Private, Community]
+        is_24_hour: { type: boolean }
+
+    Specialization:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+
+    TimeSlot:
+      type: object
+      properties:
+        id: { type: integer }
+        doctor_id: { type: integer }
+        facility_type: { type: string }
+        facility_id: { type: integer }
+        slot_date: { type: string, format: date }
+        start_time: { type: string, example: '09:00' }
+        end_time: { type: string, example: '09:30' }
+        max_appointments: { type: integer }
+        current_bookings: { type: integer }
+
+    MedicalHistory:
+      type: object
+      properties:
+        id: { type: integer }
+        patient_id: { type: integer }
+        doctor_id: { type: integer }
+        appointment_id: { type: integer }
+        diagnosis: { type: string }
+        treatment: { type: string }
+        medications: { type: string }
+        notes: { type: string }
+        is_chronic: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Review:
+      type: object
+      properties:
+        id: { type: integer }
+        doctor_id: { type: integer }
+        patient_id: { type: integer }
+        appointment_id: { type: integer }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        type:
+          type: string
+          enum: [appointment_confirmation, queue_call, appointment_reminder, general]
+        title: { type: string }
+        message: { type: string }
+        is_read: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error: { type: string }
+
+paths:
+  # ─── AUTH ─────────────────────────────────────────────────
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, first_name, last_name, id_number, role]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                first_name: { type: string }
+                last_name: { type: string }
+                id_number:
+                  type: string
+                  pattern: '^\d{13}$'
+                  description: 13-digit South African ID number (Luhn-validated)
+                phone_number: { type: string }
+                role:
+                  type: string
+                  enum: [Patient, Doctor, Receptionist, Admin]
+                # Patient fields
+                medical_aid_provider: { type: string }
+                medical_aid_number: { type: string }
+                blood_type:
+                  type: string
+                  enum: [A+, A-, B+, B-, AB+, AB-, O+, O-]
+                allergies: { type: string }
+                emergency_contact_name: { type: string }
+                emergency_contact_phone: { type: string }
+                # Doctor fields
+                hpcsa_number:
+                  type: string
+                  pattern: '^[A-Z]{2}\d{7}$'
+                  example: MP1234567
+                practice_number: { type: string }
+                specialization_id: { type: integer }
+                consultation_fee: { type: number }
+                years_of_experience: { type: integer }
+                bio: { type: string }
+      responses:
+        '201':
+          description: Registration successful — access token returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accessToken: { type: string }
+                          user: { $ref: '#/components/schemas/User' }
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: refresh_token httpOnly cookie
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accessToken: { type: string }
+                          user: { $ref: '#/components/schemas/User' }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and clear refresh token cookie
+      responses:
+        '200':
+          description: Logged out successfully
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token using refresh_token cookie
+      security: []
+      responses:
+        '200':
+          description: New access token
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accessToken: { type: string }
+        '401':
+          description: Invalid or expired refresh token
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user profile
+      responses:
+        '200':
+          description: Current user details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+
+  # ─── DOCTORS ──────────────────────────────────────────────
+  /api/doctors:
+    get:
+      tags: [Doctors]
+      summary: Search and list doctors
+      security: []
+      parameters:
+        - name: specialization_id
+          in: query
+          schema: { type: integer }
+        - name: province
+          in: query
+          schema: { type: string }
+        - name: search
+          in: query
+          description: Search by name or specialization
+          schema: { type: string }
+        - name: facility_type
+          in: query
+          schema: { type: string, enum: [Hospital, Clinic] }
+        - name: min_fee
+          in: query
+          schema: { type: number }
+        - name: max_fee
+          in: query
+          schema: { type: number }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: List of doctors
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Doctor' }
+
+  /api/doctors/{id}:
+    get:
+      tags: [Doctors]
+      summary: Get a specific doctor's profile
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Doctor profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Doctor' }
+        '404':
+          description: Doctor not found
+
+    patch:
+      tags: [Doctors]
+      summary: Update doctor profile (Doctor or Admin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                consultation_fee: { type: number }
+                years_of_experience: { type: integer }
+                bio: { type: string }
+                is_available: { type: boolean }
+      responses:
+        '200':
+          description: Doctor updated
+
+  # ─── APPOINTMENTS ─────────────────────────────────────────
+  /api/appointments:
+    get:
+      tags: [Appointments]
+      summary: List appointments for the current user
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Scheduled, Confirmed, In-Progress, Completed, Cancelled, No-Show]
+        - name: from_date
+          in: query
+          schema: { type: string, format: date }
+        - name: to_date
+          in: query
+          schema: { type: string, format: date }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: List of appointments
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Appointment' }
+
+    post:
+      tags: [Appointments]
+      summary: Book an appointment (Patient)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctor_id, facility_type, facility_id, appointment_datetime]
+              properties:
+                doctor_id: { type: integer }
+                facility_type: { type: string, enum: [Hospital, Clinic] }
+                facility_id: { type: integer }
+                appointment_datetime: { type: string, format: date-time }
+                reason_for_visit: { type: string }
+                is_emergency: { type: boolean, default: false }
+                time_slot_id: { type: integer }
+      responses:
+        '201':
+          description: Appointment booked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          appointmentId: { type: integer }
+
+  /api/appointments/{id}:
+    get:
+      tags: [Appointments]
+      summary: Get a specific appointment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Appointment details
+    patch:
+      tags: [Appointments]
+      summary: Update appointment status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [Confirmed, Cancelled, Completed, No-Show]
+      responses:
+        '200':
+          description: Appointment updated
+
+  /api/appointments/{id}/emergency-followup:
+    get:
+      tags: [Appointments]
+      summary: Get the authenticated patient's emergency arrival follow-up
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Existing follow-up details, or null if no choice has been recorded
+        '401':
+          description: Authentication required
+        '403':
+          description: The appointment is not an emergency appointment owned by the patient
+    post:
+      tags: [Appointments]
+      summary: Record an ambulance choice and send the related email
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ambulance_requested]
+              properties:
+                ambulance_requested: { type: boolean }
+      responses:
+        '200':
+          description: Choice recorded and email sent (or an existing completed choice returned)
+        '202':
+          description: Email delivery is already being processed
+        '401':
+          description: Authentication required
+        '403':
+          description: The appointment is not an emergency appointment owned by the patient
+        '409':
+          description: A different choice has already been recorded
+        '502':
+          description: Choice was recorded, but email delivery failed; retry is available
+
+  # ─── QUEUE ────────────────────────────────────────────────
+  /api/queue:
+    get:
+      tags: [Queue]
+      summary: Get today's queue
+      parameters:
+        - name: doctor_id
+          in: query
+          schema: { type: integer }
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+          description: Defaults to today
+      responses:
+        '200':
+          description: Queue entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/QueueEntry' }
+
+    post:
+      tags: [Queue]
+      summary: Add appointment to queue (Receptionist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id, doctor_id, date]
+              properties:
+                appointment_id: { type: integer }
+                doctor_id: { type: integer }
+                date: { type: string, format: date }
+      responses:
+        '201':
+          description: Added to queue
+
+  /api/queue/{id}:
+    patch:
+      tags: [Queue]
+      summary: Perform queue action (Doctor, Nurse, Receptionist or Admin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [call, complete, no-show, skip, waiting, refer]
+                  description: |
+                    - `call`: Set patient to In-Progress (being attended to), record the actual wait, send SMS/email notification
+                    - `complete`: Mark consultation done
+                    - `no-show`: Mark patient as No-Show
+                    - `skip`: Move patient to end of queue
+                    - `waiting`: Return the patient to the waiting list
+                    - `refer`: Refer the patient onward (Doctor/Nurse/Admin only; requires `referred_to`). Notifies the patient.
+                referred_to: { type: string, maxLength: 255, description: Required when action is `refer` }
+                referral_reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Queue updated; Socket.IO and SSE clients are notified and waiting estimates are recalculated
+        '409':
+          description: The entry is already completed or referred
+
+  /api/queue/sse:
+    get:
+      tags: [Queue]
+      summary: Server-Sent Events stream for live queue updates
+      description: |
+        Returns an SSE stream. Events:
+        - `initial` — full queue array on connect
+        - `queue-update` — emitted when any queue action occurs (client should re-fetch)
+        - `heartbeat` — emitted every 30s to keep the connection alive
+      parameters:
+        - name: doctor_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: initial
+                  data: [{"id":1,"queue_position":1,...}]
+
+                  event: queue-update
+                  data: updated
+
+                  event: heartbeat
+                  data: ping
+
+  # ─── HOSPITALS ────────────────────────────────────────────
+  /api/hospitals:
+    get:
+      tags: [Hospitals]
+      summary: List hospitals
+      security: []
+      parameters:
+        - name: province
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [Public, Private] }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: List of hospitals
+    post:
+      tags: [Hospitals]
+      summary: Create a hospital (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Hospital' }
+      responses:
+        '201':
+          description: Hospital created
+
+  /api/hospitals/{id}:
+    get:
+      tags: [Hospitals]
+      summary: Get hospital details
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Hospital details
+    patch:
+      tags: [Hospitals]
+      summary: Update hospital (Admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Hospital' }
+      responses:
+        '200':
+          description: Hospital updated
+
+  # ─── CLINICS ──────────────────────────────────────────────
+  /api/clinics:
+    get:
+      tags: [Clinics]
+      summary: List clinics
+      security: []
+      parameters:
+        - name: province
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [Public, Private, Community] }
+        - name: is_24_hour
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: List of clinics
+    post:
+      tags: [Clinics]
+      summary: Create a clinic (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Clinic' }
+      responses:
+        '201':
+          description: Clinic created
+
+  /api/clinics/{id}:
+    get:
+      tags: [Clinics]
+      summary: Get clinic details
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Clinic details
+
+  # ─── SPECIALIZATIONS ──────────────────────────────────────
+  /api/specializations:
+    get:
+      tags: [Specializations]
+      summary: List all specializations
+      security: []
+      responses:
+        '200':
+          description: List of specializations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Specialization' }
+    post:
+      tags: [Specializations]
+      summary: Create a specialization (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+      responses:
+        '201':
+          description: Specialization created
+
+  # ─── TIME SLOTS ───────────────────────────────────────────
+  /api/time-slots:
+    get:
+      tags: [Time Slots]
+      summary: Get available time slots for a doctor
+      parameters:
+        - name: doctor_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: facility_type
+          in: query
+          schema: { type: string, enum: [Hospital, Clinic] }
+        - name: facility_id
+          in: query
+          schema: { type: integer }
+        - name: from_date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Available time slots
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/TimeSlot' }
+    post:
+      tags: [Time Slots]
+      summary: Create a time slot (Doctor only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [facility_type, facility_id, slot_date, start_time, end_time]
+              properties:
+                facility_type: { type: string, enum: [Hospital, Clinic] }
+                facility_id: { type: integer }
+                slot_date: { type: string, format: date }
+                start_time: { type: string, example: '09:00' }
+                end_time: { type: string, example: '09:30' }
+                max_appointments: { type: integer, default: 1 }
+      responses:
+        '201':
+          description: Time slot created
+
+  # ─── REVIEWS ──────────────────────────────────────────────
+  /api/reviews:
+    get:
+      tags: [Reviews]
+      summary: Get reviews for a doctor
+      security: []
+      parameters:
+        - name: doctor_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: List of reviews
+    post:
+      tags: [Reviews]
+      summary: Submit a review (Patient only, after appointment)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctor_id, appointment_id, rating]
+              properties:
+                doctor_id: { type: integer }
+                appointment_id: { type: integer }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string }
+      responses:
+        '201':
+          description: Review submitted
+
+  # ─── MEDICAL HISTORY ──────────────────────────────────────
+  /api/medical-history:
+    get:
+      tags: [Medical History]
+      summary: Get patient medical history (Patient sees own; Doctor sees assigned patients)
+      parameters:
+        - name: patient_id
+          in: query
+          description: Required for Doctors/Admins; ignored for Patients (own records returned)
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Medical history entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/MedicalHistory' }
+    post:
+      tags: [Medical History]
+      summary: Add medical history entry (Doctor only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patient_id, diagnosis]
+              properties:
+                patient_id: { type: integer }
+                appointment_id: { type: integer }
+                diagnosis: { type: string }
+                treatment: { type: string }
+                medications: { type: string }
+                notes: { type: string }
+                is_chronic: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Medical history entry created
+
+  # ─── NOTIFICATIONS ────────────────────────────────────────
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: Get current user's notifications
+      parameters:
+        - name: unread_only
+          in: query
+          schema: { type: boolean }
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: List of notifications
+
+  # ─── PATIENTS ─────────────────────────────────────────────
+  /api/patients:
+    get:
+      tags: [Patients]
+      summary: List patients (Receptionist, Doctor, Admin)
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: List of patients
+
+  /api/patients/{id}:
+    get:
+      tags: [Patients]
+      summary: Get patient profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Patient profile
+
+  # ─── AI ENDPOINTS ─────────────────────────────────────────
+  /api/ai/symptom-check:
+    post:
+      tags: [AI]
+      summary: Rule-based symptom checker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symptoms]
+              properties:
+                symptoms:
+                  type: array
+                  items: { type: string }
+                  example: [headache, fever, fatigue]
+                age: { type: integer }
+                gender: { type: string, enum: [Male, Female, Other] }
+      responses:
+        '200':
+          description: Symptom analysis with recommended specializations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          urgency:
+                            type: string
+                            enum: [low, medium, high, emergency]
+                          recommendations:
+                            type: array
+                            items: { type: string }
+                          suggested_specializations:
+                            type: array
+                            items: { type: string }
+                          disclaimer: { type: string }
+
+  /api/ai/predict-wait-time:
+    get:
+      tags: [AI]
+      summary: Expected wait for a doctor at a given appointment time (used while booking)
+      description: Uses the active trained model when one exists, otherwise patients ahead × the doctor's average consultation time.
+      parameters:
+        - name: doctor_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: appointment_datetime
+          in: query
+          required: true
+          schema: { type: string, example: '2026-09-21T09:30' }
+      responses:
+        '200':
+          description: Wait time prediction
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          patients_ahead: { type: integer }
+                          avg_consultation_minutes: { type: number }
+                          predicted_wait_minutes: { type: integer }
+                          predicted_wait_display: { type: string, example: '~25 min' }
+                          range_minutes:
+                            type: object
+                            nullable: true
+                            properties: { low: { type: integer }, high: { type: integer } }
+                          model_version: { type: string }
+                          confidence: { type: string, enum: [model, estimated] }
+
+  /api/ai/predict-waiting-time:
+    post:
+      tags: [AI]
+      summary: Predict a waiting time from queue figures (interface contract)
+      description: Stores the prediction with its model version and latency. The top-level response follows the specification's contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queue_length, available_doctors, average_consultation_time]
+              properties:
+                queue_length: { type: integer, minimum: 0, example: 15 }
+                available_doctors: { type: integer, minimum: 1, example: 3 }
+                average_consultation_time: { type: number, example: 12 }
+                priority_level: { type: integer, minimum: 1, maximum: 4, description: '1 = Red … 4 = Green (default 4)' }
+                hour_of_day: { type: integer, minimum: 0, maximum: 23 }
+                doctor_id: { type: integer }
+      responses:
+        '200':
+          description: Prediction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  predicted_waiting_time: { type: integer, example: 25 }
+                  unit: { type: string, example: minutes }
+                  range_minutes: { type: object, nullable: true, properties: { low: { type: integer }, high: { type: integer } } }
+                  model_version: { type: string }
+                  model_type: { type: string, enum: [ml, baseline] }
+                  latency_ms: { type: integer }
+
+  /api/ai/train-wait-model:
+    post:
+      tags: [AI]
+      summary: Train the wait-time model on completed consultations (Admin only)
+      description: The model is activated only if it beats the queueing baseline on a held-out test set. Returns train/test metrics.
+      responses:
+        '200': { description: Training outcome (saved, activated, reason, train/test/baseline_test metrics) }
+    get:
+      tags: [AI]
+      summary: Live prediction accuracy vs actual waits, and the model registry (Admin only)
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 30 }
+      responses:
+        '200': { description: Accuracy report and recent models }
+
+  /api/ai/emergency-check:
+    post:
+      tags: [AI]
+      summary: AI emergency symptom pre-check (Patient only)
+      description: |
+        Screens a free-text symptom description via an LLM (OpenRouter) for emergency red flags (SATS Red/Orange),
+        with a keyword-based fallback if the AI call fails. When flagged as an emergency, finds a doctor actually
+        on duty at the chosen hospital and fast-tracks the patient into that doctor's queue at top priority
+        (bypassing normal slot booking); the queue entry is marked `ai_flagged` until a clinician confirms it via
+        the existing triage screen. When no doctor is available, no booking is made and the patient is told to
+        seek emergency care directly. Rate-limited to 8 checks per 15 minutes per patient. Every check is logged
+        to `ai_symptom_checks` regardless of outcome.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hospital_id, description]
+              properties:
+                hospital_id: { type: integer }
+                description: { type: string, minLength: 10, maxLength: 2000, example: "Sudden chest pain and shortness of breath" }
+      responses:
+        '200':
+          description: Check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      emergency: { type: boolean }
+                      doctorAvailable: { type: boolean, nullable: true }
+                      unavailable: { type: boolean, description: 'true when the AI check itself could not be completed' }
+                      category: { type: string, enum: [Red, Orange, Yellow, Green], nullable: true }
+                      confidence: { type: string, enum: [high, medium, low] }
+                      red_flags: { type: array, items: { type: string } }
+                      source: { type: string, enum: [llm, keyword-fallback, unavailable] }
+                      message: { type: string, description: 'Patient-facing message to display' }
+                      disclaimer: { type: string }
+                      appointmentId: { type: integer, nullable: true }
+                      queueId: { type: integer, nullable: true }
+                      doctorName: { type: string, nullable: true }
+        '400': { description: Validation failed, or the per-patient rate limit was exceeded }
+        '403': { description: Not a patient }
+
+  /api/triage/suggest:
+    post:
+      tags: [Triage]
+      summary: AI-assisted triage suggestion (Nurse, Doctor, Admin) — saves nothing
+      description: Adult TEWS (South African Triage Scale) plus clinical discriminators. Paediatric patients (<13) and no-data cases return `requiresManual`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queue_id]
+              properties:
+                queue_id: { type: integer }
+                vitals:
+                  type: object
+                  properties:
+                    respiratoryRate: { type: number }
+                    heartRate: { type: number }
+                    systolicBp: { type: number }
+                    temperatureC: { type: number }
+                    spo2: { type: number }
+                    glucoseMmol: { type: number }
+                avpu: { type: string, enum: [Alert, Voice, Pain, Unresponsive] }
+                mobility: { type: string, enum: [Walking, WithHelp, Stretcher] }
+                trauma: { type: boolean }
+                discriminators: { type: array, items: { type: string }, example: [chest_pain] }
+      responses:
+        '200': { description: Suggestion (category, priority, TEWS score, confidence, rationale, missing inputs) }
+
+  /api/triage:
+    post:
+      tags: [Triage]
+      summary: Record a triage decision (Nurse, Doctor, Admin)
+      description: Same inputs as /api/triage/suggest plus the chosen `category` (Red, Orange, Yellow, Green). Sets the patient's priority and re-orders the queue. Overriding the AI suggestion requires a `notes` explanation.
+      responses:
+        '201': { description: Assessment stored }
+        '409': { description: Patient is no longer waiting }
+    get:
+      tags: [Triage]
+      summary: Triage history for a queue entry
+      parameters:
+        - name: queue_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Assessments, newest first }
+
+  /api/reports:
+    get:
+      tags: [Reports]
+      summary: Report for a selected period (Admin; Doctors see only their own data)
+      parameters:
+        - { name: type, in: query, required: true, schema: { type: string, enum: [waiting-times, appointments, queue-performance] } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date }, description: Period may be at most 366 days }
+        - { name: doctor_id, in: query, schema: { type: integer }, description: Admin only }
+      responses:
+        '200': { description: 'Report: columns, summary totals, per-day rows and per-doctor rows' }
+
+  /api/admin/settings:
+    get:
+      tags: [Admin]
+      summary: List system settings with their current values (Admin only)
+      responses:
+        '200': { description: Settings }
+    put:
+      tags: [Admin]
+      summary: Update system settings (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                settings:
+                  type: object
+                  additionalProperties: { type: string }
+                  example: { reminder_lead_hours: '24,2', reminders_enabled: 'true' }
+      responses:
+        '200': { description: Saved (normalised values returned) }
+        '422': { description: A value failed validation }
+
+  /api/admin/reminders:
+    get:
+      tags: [Admin]
+      summary: Reminder configuration, 30-day totals and recent reminders (Admin only)
+      responses:
+        '200': { description: Reminder status }
+    post:
+      tags: [Admin]
+      summary: Send any due SMS reminders now (Admin only)
+      responses:
+        '200': { description: Counts of reminders sent, failed, skipped and retried }
+
+  /api/cron/reminders:
+    post:
+      tags: [Admin]
+      summary: Scheduler entry point for SMS reminders
+      description: Authenticated with the `x-cron-secret` header (CRON_SECRET) or an Admin bearer token. Called every 5 minutes by server.js.
+      responses:
+        '200': { description: Counts of reminders sent, failed, skipped and retried }
+        '401': { description: Missing or wrong secret }
+
+  /api/ai/predict-no-show:
+    post:
+      tags: [AI]
+      summary: Predict no-show probability for an appointment (Doctor/Receptionist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appointment_id]
+              properties:
+                appointment_id: { type: integer }
+      responses:
+        '200':
+          description: No-show prediction
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          no_show_probability: { type: number, minimum: 0, maximum: 1 }
+                          risk_level:
+                            type: string
+                            enum: [low, medium, high]
+                          factors: { type: array, items: { type: string } }
+
+  # ─── ADMIN ────────────────────────────────────────────────
+  /api/admin/analytics:
+    get:
+      tags: [Admin]
+      summary: System-wide analytics dashboard data (Admin only)
+      responses:
+        '200':
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          total_users: { type: integer }
+                          total_patients: { type: integer }
+                          total_doctors: { type: integer }
+                          total_appointments: { type: integer }
+                          appointments_today: { type: integer }
+                          completion_rate: { type: number }
+                          no_show_rate: { type: number }
+                          average_wait_time_minutes: { type: number }
+                          revenue_today: { type: number }
+
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users (Admin only)
+      parameters:
+        - name: role
+          in: query
+          schema: { type: string, enum: [Patient, Doctor, Receptionist, Admin] }
+        - name: is_active
+          in: query
+          schema: { type: boolean }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: List of all users
+
+  /api/admin/users/{id}:
+    patch:
+      tags: [Admin]
+      summary: Update user status or role (Admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                is_active: { type: boolean }
+                role:
+                  type: string
+                  enum: [Patient, Doctor, Receptionist, Admin]
+      responses:
+        '200':
+          description: User updated
+    delete:
+      tags: [Admin]
+      summary: Delete a user (Admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: User deleted
+
+  /api/admin/assign-doctor:
+    post:
+      tags: [Admin]
+      summary: Assign a doctor to a hospital or clinic (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctor_id, facility_type, facility_id]
+              properties:
+                doctor_id: { type: integer }
+                facility_type: { type: string, enum: [Hospital, Clinic] }
+                facility_id: { type: integer }
+      responses:
+        '201':
+          description: Doctor assigned to facility
+
+tags:
+  - name: Auth
+    description: Authentication and session management
+  - name: Doctors
+    description: Doctor profiles and search
+  - name: Appointments
+    description: Appointment booking and management
+  - name: Queue
+    description: Real-time queue management and SSE
+  - name: Hospitals
+    description: Hospital management
+  - name: Clinics
+    description: Clinic management
+  - name: Specializations
+    description: Medical specializations
+  - name: Time Slots
+    description: Doctor availability and time slot management
+  - name: Reviews
+    description: Patient reviews of doctors
+  - name: Medical History
+    description: Patient medical records
+  - name: Notifications
+    description: In-app notifications
+  - name: Patients
+    description: Patient management
+  - name: AI
+    description: AI-powered endpoints (symptom checker, wait-time prediction, no-show prediction)
+  - name: Triage
+    description: AI-assisted triage (SATS / TEWS) and triage decisions
+  - name: Reports
+    description: Period reports on waiting times, appointments and queue performance
+  - name: Admin
+    description: Administrative endpoints (Admin role required)
